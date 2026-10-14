@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Who Wants to Binge a Million?</title>
+<!--
+  ============================================================================
+  WHO WANTS TO BINGE A MILLION?  -  single-file Millionaire-style quiz with xAPI
+  ============================================================================
+  15 questions, safe havens at $1,000 and $32,000, walk away at any time,
+  three lifelines (50/50, Phone a Colleague, Ask the Audience).
+
+  LRS SETUP (same as Netflix Jeopardy)
+   - Docebo Tin Can upload: zip index.html + tincan.xml; Docebo passes endpoint,
+     auth, actor, activity_id and registration on the launch URL.
+   - Docebo Iframe widget/material with an OAuth client: user_id, username,
+     course_id, course_code are read and used as the xAPI actor / context.
+   - Otherwise: gear icon -> Settings -> endpoint, key, secret.
+
+  ASK THE AUDIENCE
+   Tries to read previous players' answers for the current question from the
+   LRS (GET /statements, needs a key with read access). With 5+ responses it
+   shows the real split; otherwise it shows a labeled "studio audience" estimate.
+
+  xAPI STATEMENTS
+   initialized  new game
+   answered     every locked-in answer (level, prize, lifelines used, response)
+   progressed   reaching a safe haven ($1,000 / $32,000)
+   completed    winning $1,000,000 or walking away (success true / winnings)
+   failed       wrong answer (highest level reached, winnings kept)
+   experienced  Settings -> Test connection
+  ============================================================================
+-->
+<style>
+  :root {
+    --nf-red: #e50914; --nf-red-dark: #b20710; --nf-black: #000; --nf-ink: #141414;
+    --panel: #1c1c1c; --panel-2: #262626; --line: #3a3a3a; --gray: #b3b3b3; --white: #fff;
+    --ok: #46d369; --warn: #f5c518; --select: #f5a623;
+    --radius: 0.6rem; --shadow: 0 10px 30px rgba(0,0,0,.6);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  html { font-size: clamp(11px, 0.6vw + 0.9vh, 19px); height: 100%; -webkit-text-size-adjust: 100%; }
+  *, *::before, *::after { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column;
+    background: radial-gradient(ellipse at 50% 120%, #3a0306 0%, #0a0a0a 55%, #000 100%); color: var(--white);
+    font-family: var(--font); line-height: 1.35; }
+  button, input { font: inherit; }
+  button { cursor: pointer; }
+  .sr-only { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+  :focus-visible { outline: 3px solid var(--white); outline-offset: 2px; }
+
+  /* Header */
+  .topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 0.75rem; padding: 0.45rem clamp(0.5rem, 1.2vw, 1.25rem);
+    background: linear-gradient(180deg, #1a1a1a, #0a0a0a); border-bottom: 2px solid var(--nf-red); }
+  .brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 800; font-size: 1.1rem; white-space: nowrap; min-width: 0; }
+  .brand-n { display: inline-grid; place-items: center; width: 1.6em; height: 1.6em; border-radius: 0.2em; background: var(--nf-red); font-weight: 900; }
+  .brand span:last-child { overflow: hidden; text-overflow: ellipsis; }
+  .bank { margin-left: auto; display: flex; gap: 1rem; align-items: baseline; white-space: nowrap; }
+  .bank small { color: var(--gray); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 0.3rem; }
+  .bank strong { font-variant-numeric: tabular-nums; }
+  .icon-btn { background: transparent; color: var(--white); border: 1px solid var(--line); border-radius: 50%;
+    width: 2.2rem; height: 2.2rem; display: grid; place-items: center; font-size: 1.1rem; flex: 0 0 auto; }
+  .icon-btn:hover { border-color: var(--nf-red); color: var(--nf-red); }
+
+  /* Layout */
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(11rem, 15rem);
+    gap: clamp(0.5rem, 1.2vw, 1.2rem); padding: clamp(0.5rem, 1.5vh, 1.2rem) clamp(0.5rem, 1.5vw, 1.4rem); }
+  .stage { min-height: 0; display: flex; flex-direction: column; gap: clamp(0.5rem, 1.6vh, 1rem); justify-content: center; }
+
+  .lifelines { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; }
+  .lifeline { display: flex; flex-direction: column; align-items: center; gap: 0.15rem; min-width: 6.2rem;
+    background: var(--panel); color: var(--white); border: 2px solid var(--line); border-radius: 999px; padding: 0.4rem 0.9rem; }
+  .lifeline b { font-size: 1.05rem; }
+  .lifeline span { font-size: 0.7rem; color: var(--gray); text-transform: uppercase; letter-spacing: 0.06em; }
+  .lifeline:hover:not(:disabled) { border-color: var(--nf-red); }
+  .lifeline:disabled { opacity: .35; cursor: not-allowed; text-decoration: line-through; }
+
+  .q-meta { text-align: center; color: var(--gray); font-size: 0.85rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .q-meta strong { color: var(--white); }
+  .question { background: linear-gradient(180deg, #202020, #121212); border: 2px solid #333; border-top: 4px solid var(--nf-red);
+    border-radius: var(--radius); padding: clamp(0.8rem, 2.4vh, 1.6rem) clamp(1rem, 2.5vw, 2rem); text-align: center;
+    font-size: clamp(1.1rem, 1rem + 0.9vw, 1.9rem); font-weight: 600; text-wrap: balance; box-shadow: var(--shadow); }
+  .answers { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(0.4rem, 1.2vh, 0.8rem); }
+  .ans { display: flex; align-items: center; gap: 0.7rem; text-align: left; min-height: 3.2rem;
+    background: linear-gradient(180deg, #1d1d1d, #111); color: var(--white); border: 2px solid #3a3a3a; border-radius: 999px;
+    padding: 0.55rem 1.1rem; font-size: clamp(0.95rem, 0.9rem + 0.5vw, 1.35rem); font-weight: 600; transition: background .15s, border-color .15s; }
+  .ans .letter { color: var(--nf-red); font-weight: 900; flex: 0 0 auto; }
+  .ans:hover:not(:disabled) { border-color: var(--nf-red); }
+  .ans.selected { background: linear-gradient(180deg, #ffb53a, #d98a0f); border-color: #ffd27a; color: #111; }
+  .ans.selected .letter { color: #111; }
+  .ans.correct { background: linear-gradient(180deg, #3ddc6a, #1e9e44); border-color: #a8f5be; color: #04210d; }
+  .ans.correct .letter { color: #04210d; }
+  .ans.wrong { background: linear-gradient(180deg, #ff3b45, var(--nf-red-dark)); border-color: #ff9aa0; }
+  .ans.wrong .letter { color: #fff; }
+  .ans.removed { visibility: hidden; }
+  .ans:disabled { cursor: default; }
+  .ans.flash { animation: flash .35s 3; }
+  @keyframes flash { 50% { filter: brightness(1.6); } }
+
+  .controls { display: flex; justify-content: center; gap: 0.6rem; flex-wrap: wrap; }
+  .btn { background: var(--nf-red); color: #fff; border: 0; border-radius: 0.3rem; padding: 0.6rem 1.2rem; font-weight: 800; box-shadow: 0 2px 8px rgba(229,9,20,.35); }
+  .btn:hover:not(:disabled) { background: #ff1f2a; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+  .btn-ghost { background: transparent; color: var(--gray); border: 1px solid var(--line); border-radius: 0.3rem; padding: 0.55rem 1rem; font-weight: 700; }
+  .btn-ghost:hover:not(:disabled) { color: #fff; border-color: #777; }
+  .btn-ghost:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.85rem; }
+  .hint-line { text-align: center; color: var(--gray); font-size: 0.8rem; margin: 0; }
+
+  /* Lifeline result panel */
+  .assist { background: #181818; border: 1px solid #444; border-left: 4px solid var(--warn); border-radius: 0.5rem; padding: 0.6rem 0.9rem; font-size: 0.95rem; }
+  .assist h3 { margin: 0 0 0.35rem; font-size: 0.85rem; color: var(--warn); text-transform: uppercase; letter-spacing: 0.06em; }
+  .assist p { margin: 0; }
+  .poll { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; align-items: end; height: 6.5rem; margin-top: 0.3rem; }
+  .poll .bar { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 0.2rem; font-size: 0.8rem; }
+  .poll .fill { width: 70%; background: linear-gradient(180deg, #ff4d55, var(--nf-red-dark)); border-radius: 0.25rem 0.25rem 0 0; min-height: 2px; transition: height .6s; }
+  .poll .pct { font-weight: 800; font-variant-numeric: tabular-nums; }
+  .poll .lbl { font-weight: 900; color: var(--gray); }
+  .poll-note { color: var(--gray); font-size: 0.78rem; margin-top: 0.3rem; }
+
+  /* Ladder */
+  .ladder { min-height: 0; overflow: auto; background: rgba(20,20,20,.85); border: 1px solid #333; border-radius: var(--radius);
+    padding: 0.5rem; display: flex; flex-direction: column-reverse; gap: 2px; }
+  .rung { flex: 1 1 0; max-height: 2.6rem; align-items: center; display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.22rem 0.6rem; border-radius: 0.3rem;
+    font-weight: 700; font-variant-numeric: tabular-nums; color: var(--gray); font-size: clamp(0.78rem, 1.9vh, 1rem); }
+  .rung .n { opacity: .7; }
+  .rung.safe { color: var(--white); }
+  .rung.safe .amt::after { content: " \1F512"; font-size: 0.75em; }
+  .rung.done { color: #6b6b6b; }
+  .rung.current { background: var(--nf-red); color: #fff; }
+  .rung.current .n { opacity: 1; }
+  .ladder h2 { margin: 0 0 0.3rem; font-size: 0.75rem; color: var(--gray); text-transform: uppercase; letter-spacing: 0.08em; text-align: center; order: 99; }
+  .mini-ladder { display: none; text-align: center; font-size: 0.85rem; color: var(--gray); }
+  .mini-ladder strong { color: #fff; }
+
+  @media (max-width: 700px) {
+    main { grid-template-columns: 1fr; overflow: auto; }
+    .ladder { display: none; }
+    .mini-ladder { display: block; }
+    .answers { grid-template-columns: 1fr; }
+    .stage { justify-content: flex-start; }
+    .bank .safe-wrap { display: none; }
+  }
+
+  /* Overlays (intro, confirm, results, settings) */
+  .overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    padding: clamp(0.4rem, 2vh, 1.5rem); background: rgba(0,0,0,.82); backdrop-filter: blur(3px); }
+  .card { width: min(100%, 46rem); max-height: 100%; overflow: auto; background: linear-gradient(180deg, #202020, #121212);
+    border: 1px solid #333; border-top: 4px solid var(--nf-red); border-radius: 0.75rem; box-shadow: var(--shadow);
+    padding: clamp(0.9rem, 2.4vh, 1.8rem) clamp(1rem, 2.6vw, 2.2rem); }
+  .card h1, .card h2 { margin: 0 0 0.4rem; }
+  .card h1 { font-size: clamp(1.5rem, 1.2rem + 1.2vw, 2.3rem); line-height: 1.15; }
+  .card h1 em { font-style: normal; color: var(--nf-red); }
+  .lede { color: var(--gray); margin: 0 0 0.9rem; }
+  .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.6rem; margin: 0 0 1rem; padding: 0; list-style: none; }
+  .rules li { background: #181818; border: 1px solid #333; border-radius: 0.5rem; padding: 0.6rem 0.75rem; font-size: 0.92rem; }
+  .rules li b { display: block; color: #fff; margin-bottom: 0.15rem; }
+  .rules li span { color: var(--gray); }
+  .keys { color: var(--gray); font-size: 0.8rem; margin: 0 0 1rem; }
+  kbd { background: #2b2b2b; border: 1px solid #555; border-bottom-width: 2px; border-radius: 0.25rem; padding: 0 0.35rem; font-family: inherit; font-size: 0.85em; color: #fff; }
+  .card-foot { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+  .big { font-size: clamp(2.2rem, 7vh, 3.6rem); font-weight: 900; color: var(--nf-red); margin: 0.2rem 0; font-variant-numeric: tabular-nums; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: 0.6rem; margin: 0.8rem 0 1rem; }
+  .stats div { background: #181818; border: 1px solid #333; border-radius: 0.5rem; padding: 0.6rem; text-align: center; }
+  .stats dt { color: var(--gray); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .stats dd { margin: 0.2rem 0 0; font-weight: 900; font-size: 1.25rem; }
+
+  .settings { position: fixed; top: 0; right: 0; bottom: 0; z-index: 60; width: min(100%, 26rem); background: #161616;
+    border-left: 1px solid #333; box-shadow: var(--shadow); padding: 1rem 1.1rem; overflow: auto; }
+  .settings h2 { margin: 0 0 0.5rem; font-size: 1.3rem; display: flex; align-items: center; }
+  .settings h2 .icon-btn { margin-left: auto; }
+  .settings fieldset { border: 1px solid #333; border-radius: 0.5rem; padding: 0.6rem 0.8rem 0.8rem; margin: 0 0 0.8rem; }
+  .settings legend { color: var(--gray); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; padding: 0 0.3rem; }
+  .settings label { display: block; font-size: 0.85rem; color: #ddd; margin-top: 0.5rem; }
+  .settings input[type=text], .settings input[type=email], .settings input[type=url], .settings input[type=password] {
+    width: 100%; margin-top: 0.2rem; background: #0d0d0d; color: #fff; border: 1px solid #444; border-radius: 0.3rem; padding: 0.45rem 0.6rem; }
+  .settings input:disabled { opacity: .55; }
+  .settings .check { display: flex; align-items: center; gap: 0.5rem; }
+  .settings .check input { width: 1.1rem; height: 1.1rem; accent-color: var(--nf-red); }
+  .settings .btns { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .lms-note { background: #152a17; border: 1px solid #2f6b37; color: #bfe8c4; border-radius: 0.4rem; padding: 0.5rem 0.7rem; font-size: 0.85rem; }
+  .xapi-status { font-size: 0.82rem; color: var(--gray); margin: 0.6rem 0 0; min-height: 1.2em; }
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 55; }
+
+  .toasts { position: fixed; top: 0.6rem; left: 50%; transform: translateX(-50%); z-index: 70; display: grid; gap: 0.4rem; pointer-events: none; width: min(92vw, 28rem); }
+  .toast { background: #222; color: #fff; border-left: 4px solid var(--gray); border-radius: 0.4rem; padding: 0.55rem 0.8rem; font-weight: 600; font-size: 0.9rem; box-shadow: var(--shadow); animation: tin .2s ease-out; }
+  .toast.ok { border-color: var(--ok); } .toast.bad { border-color: var(--nf-red); } .toast.warn { border-color: var(--warn); }
+  @keyframes tin { from { opacity: 0; transform: translateY(-6px);} to { opacity: 1; transform: none; } }
+  .confetti { position: fixed; inset: 0; pointer-events: none; z-index: 80; overflow: hidden; }
+  .confetti span { position: absolute; top: -2vh; width: 0.6rem; height: 0.9rem; border-radius: 2px; animation: fall 1.8s ease-in forwards; }
+  @keyframes fall { to { transform: translateY(110vh) rotate(720deg); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } .confetti { display: none; } }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="brand-n" aria-hidden="true">N</span><span>Who Wants to Binge a Million?</span></div>
+  <div class="bank" aria-live="polite">
+    <span><small>Banked</small><strong id="banked">$0</strong></span>
+    <span class="safe-wrap"><small>Guaranteed</small><strong id="guaranteed">$0</strong></span>
+  </div>
+  <button class="icon-btn" id="btnHelp" aria-label="How to play">?</button>
+  <button class="icon-btn" id="btnSettings" aria-label="Settings" aria-expanded="false">&#9881;</button>
+</header>
+
+<main>
+  <section class="stage" aria-label="Question">
+    <div class="lifelines" role="group" aria-label="Lifelines">
+      <button class="lifeline" id="ll5050" aria-label="Lifeline: 50/50, removes two wrong answers"><b>50:50</b><span>Two wrong out</span></button>
+      <button class="lifeline" id="llPhone" aria-label="Lifeline: Phone a colleague"><b>&#128222;</b><span>Phone a colleague</span></button>
+      <button class="lifeline" id="llPoll" aria-label="Lifeline: Ask the audience"><b>&#128202;</b><span>Ask the audience</span></button>
+    </div>
+    <div class="mini-ladder" id="miniLadder"></div>
+    <div class="q-meta" id="qMeta"></div>
+    <div class="question" id="question" role="heading" aria-level="2"></div>
+    <div class="answers" id="answers" role="group" aria-label="Answers"></div>
+    <div class="assist" id="assist" hidden aria-live="polite"></div>
+    <div class="controls">
+      <button class="btn" id="btnLock" disabled>Final answer</button>
+      <button class="btn-ghost" id="btnWalk">Walk away</button>
+    </div>
+    <p class="hint-line">Pick an answer, then lock it in. Keys: <kbd>A</kbd>&ndash;<kbd>D</kbd> to choose, <kbd>Enter</kbd> to lock.</p>
+  </section>
+  <aside class="ladder" id="ladder" aria-label="Prize ladder"></aside>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="sr-only" id="announcer" aria-live="assertive"></div>
+
+<!-- ===== HOW TO PLAY (intro screen; also opened by the ? button) ===== -->
+<div class="overlay" id="intro" role="dialog" aria-modal="true" aria-labelledby="introTitle">
+  <div class="card">
+    <h1 id="introTitle">Who Wants to <em>Binge</em> a Million?</h1>
+    <p class="lede">Fifteen questions about Netflix's biggest recent shows and films. Each one is worth more than the last. How far can you climb?</p>
+    <ul class="rules">
+      <li><b>1. Climb the ladder</b><span>Answer 15 multiple-choice questions, from $100 up to $1,000,000. They get harder as you go.</span></li>
+      <li><b>2. Lock it in</b><span>Pick an answer, then press <em>Final answer</em>. There's no clock, so take your time.</span></li>
+      <li><b>3. Safe havens</b><span>Reach $1,000 and $32,000 to lock in that money. A wrong answer drops you back to your last safe haven.</span></li>
+      <li><b>4. Walk away</b><span>Not sure? Walk away before answering and keep everything you've banked so far.</span></li>
+      <li><b>5. Three lifelines</b><span><b style="display:inline">50:50</b> removes two wrong answers. <b style="display:inline">Phone a colleague</b> gives you a helpful hint. <b style="display:inline">Ask the audience</b> shows how other players voted. Each can be used once per game.</span></li>
+      <li><b>6. Your progress counts</b><span>Your result is recorded when you finish, and your game is saved if you need to step away.</span></li>
+    </ul>
+    <p class="keys">Keyboard: <kbd>A</kbd> <kbd>B</kbd> <kbd>C</kbd> <kbd>D</kbd> to choose, <kbd>Enter</kbd> to lock in, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> for lifelines.</p>
+    <div class="card-foot">
+      <button class="btn" id="btnStart">Let's play</button>
+      <span class="lede" id="resumeNote" style="margin:0"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== CONFIRM / RESULTS (rendered dynamically) ===== -->
+<div class="overlay" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="card" id="modalCard"></div></div>
+
+<!-- ===== SETTINGS ===== -->
+<div class="scrim" id="scrim" hidden></div>
+<aside class="settings" id="settings" hidden aria-label="Settings">
+  <h2>Settings <button class="icon-btn" id="btnCloseSettings" aria-label="Close settings">&times;</button></h2>
+  <p class="lms-note" id="lmsNote" hidden></p>
+  <form id="settingsForm">
+    <fieldset><legend>Player (xAPI actor)</legend>
+      <label>Display name <input type="text" id="sName"></label>
+      <label>Email <input type="email" id="sEmail" placeholder="you@example.com"></label>
+    </fieldset>
+    <fieldset><legend>LRS</legend>
+      <label>Endpoint URL <input type="url" id="sEndpoint" placeholder="https://your-lrs.example.com/xapi/"></label>
+      <label>Key <input type="text" id="sKey" autocomplete="off"></label>
+      <label>Secret <input type="password" id="sSecret" autocomplete="off"></label>
+    </fieldset>
+    <fieldset><legend>Game</legend>
+      <label class="check"><input type="checkbox" id="sSound"> Sound effects</label>
+      <label class="check"><input type="checkbox" id="sSuspense"> Dramatic pause before reveal</label>
+    </fieldset>
+    <div class="btns">
+      <button type="submit" class="btn btn-sm">Save</button>
+      <button type="button" class="btn-ghost btn-sm" id="btnTest">Test connection</button>
+      <button type="button" class="btn-ghost btn-sm" id="btnRetry">Retry queue (<span id="queueCount">0</span>)</button>
+      <button type="button" class="btn-ghost btn-sm" id="btnNew">New game</button>
+    </div>
+    <p class="xapi-status" id="xapiStatus"></p>
+  </form>
+</aside>
+
+<script>
+(() => {
+"use strict";
+
+/* ================================ CONFIG ================================ */
+const XAPI_DEFAULTS = {
+  endpoint: "", key: "", secret: "",
+  actorName: "Player", actorEmail: "player@example.com",
+  activityId: "https://learn.netflix.net/xapi/activities/binge-a-million",
+  appName: "Who Wants to Binge a Million (Single File)",
+};
+const EXT = "https://learn.netflix.net/xapi/ext/";
+const VERBS = {
+  initialized: "http://adlnet.gov/expapi/verbs/initialized",
+  answered: "http://adlnet.gov/expapi/verbs/answered",
+  progressed: "http://adlnet.gov/expapi/verbs/progressed",
+  completed: "http://adlnet.gov/expapi/verbs/completed",
+  failed: "http://adlnet.gov/expapi/verbs/failed",
+  experienced: "http://adlnet.gov/expapi/verbs/experienced",
+};
+const LADDER = [100, 200, 300, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 125000, 250000, 500000, 1000000];
+const SAFE = [4, 9];               // zero-based rungs: $1,000 and $32,000
+const LETTERS = ["A", "B", "C", "D"];
+const STORAGE = { state: "bam_state_v1", settings: "bam_settings_v1", queue: "bam_xapi_queue_v1" };
+
+/* ============================== QUESTIONS =============================== */
+// Two questions per level; one is picked at random each game. answer = index of the correct option.
+// "colleague" is the Phone-a-Colleague hint: a nudge, not a giveaway.
+const QUESTIONS = [
+  { id: "l01-eggo", level: 1, q: "Which frozen breakfast food does Eleven love in Stranger Things?", options: ["Eggo waffles", "Pop-Tarts", "Frozen pancakes", "Toaster strudels"], answer: 0, colleague: "Easy one! The brand's slogan is \"Leggo my...\" something." },
+  { id: "l01-thing", level: 1, q: "What is the name of Wednesday Addams' loyal disembodied-hand sidekick?", options: ["Lurch", "Thing", "Fester", "Itt"], answer: 1, colleague: "It's the vaguest name possible. Like, literally a \"thing.\"" },
+  { id: "l02-demons", level: 2, q: "In KPop Demon Hunters, what does the girl group secretly fight?", options: ["Vampires", "Robots", "Demons", "Ghosts"], answer: 2, colleague: "Don't overthink it. Read the title of the movie again." },
+  { id: "l02-456", level: 2, q: "Which player number does Seong Gi-hun wear in Squid Game?", options: ["001", "067", "218", "456"], answer: 3, colleague: "He's the last number on the roster. The very highest one." },
+  { id: "l03-hawkins", level: 3, q: "What is the name of the town where Stranger Things takes place?", options: ["Hawkins", "Derry", "Riverdale", "Mystic Falls"], answer: 0, colleague: "Derry is Stephen King's town and Riverdale is Archie's. It's the one that sounds like a bird of prey." },
+  { id: "l03-nevermore", level: 3, q: "Which school does Wednesday attend?", options: ["Hogwarts", "Nevermore Academy", "Xavier's School", "Moordale Secondary"], answer: 1, colleague: "Think of Edgar Allan Poe's raven. What did it keep saying?" },
+  { id: "l04-tyson", level: 4, q: "Who did Jake Paul fight in Netflix's November 2024 boxing livestream?", options: ["Floyd Mayweather", "Conor McGregor", "Mike Tyson", "Canelo Álvarez"], answer: 2, colleague: "It was the 58-year-old legend they call \"Iron Mike.\"" },
+  { id: "l04-sandler", level: 4, q: "Which actor returned as Happy Gilmore in the 2025 sequel?", options: ["Will Ferrell", "Ben Stiller", "Kevin James", "Adam Sandler"], answer: 3, colleague: "Same guy as the 1996 original. He's made a ton of Netflix movies." },
+  { id: "l05-rlgl", level: 5, q: "What is the very first game the players face in Squid Game?", options: ["Red Light, Green Light", "Tug of war", "Marbles", "Glass bridge"], answer: 0, colleague: "Remember the giant doll that turns around? You have to freeze." },
+  { id: "l05-rabbi", level: 5, q: "In Nobody Wants This, what is Noah's job?", options: ["Chef", "Rabbi", "Lawyer", "High school teacher"], answer: 1, colleague: "The whole joke is that Joanne isn't religious... and he very much is, professionally." },
+  { id: "l06-huntrx", level: 6, q: "What is the name of the girl group in KPop Demon Hunters?", options: ["Saja Boys", "Demon Divas", "HUNTR/X", "K-Starz"], answer: 2, colleague: "Careful: the Saja Boys are the rivals. The heroes' name has a slash in it." },
+  { id: "l06-onetake", level: 6, q: "How was each episode of Adolescence filmed?", options: ["Entirely on smartphones", "In black and white", "With no dialogue", "In one continuous take"], answer: 3, colleague: "People were amazed the camera never cut away. Not once per episode." },
+  { id: "l07-burton", level: 7, q: "Which director executive produces Wednesday and directs several episodes?", options: ["Tim Burton", "Guillermo del Toro", "Ryan Murphy", "The Duffer Brothers"], answer: 0, colleague: "Think Beetlejuice and Edward Scissorhands. Gothic and quirky." },
+  { id: "l07-upsidedown", level: 7, q: "What is the alternate dimension in Stranger Things called?", options: ["The Nether", "The Upside Down", "The Shadow Realm", "The Other Side"], answer: 1, colleague: "It's like Hawkins, just... flipped." },
+  { id: "l08-raw", level: 8, q: "Which weekly WWE show moved to Netflix in January 2025?", options: ["SmackDown", "NXT", "Raw", "WrestleMania"], answer: 2, colleague: "WrestleMania is a yearly event, not weekly. The one I mean is also a word for uncooked." },
+  { id: "l08-arcane", level: 8, q: "Arcane is based on which video game?", options: ["Overwatch", "Fortnite", "Valorant", "League of Legends"], answer: 3, colleague: "Vi and Jinx are champions you can play in a big Riot Games title." },
+  { id: "l09-golden", level: 9, q: "Which song from KPop Demon Hunters became a chart-topping hit?", options: ["Golden", "Dynamite", "Butter", "Shine"], answer: 0, colleague: "Dynamite and Butter are BTS songs. The one from the movie is shiny, like a medal." },
+  { id: "l09-beyonce", level: 9, q: "Who performed the halftime show during Netflix's Christmas Day 2024 NFL games?", options: ["Taylor Swift", "Beyoncé", "Rihanna", "Shakira"], answer: 1, colleague: "People called it the \"Beyoncé Bowl\"... oops, did I just say that?" },
+  { id: "l10-frontman", level: 10, q: "Which actor plays the Front Man in Squid Game?", options: ["Lee Jung-jae", "Gong Yoo", "Lee Byung-hun", "Park Hae-soo"], answer: 2, colleague: "Lee Jung-jae plays Gi-hun and Gong Yoo is the recruiter. It's the other Lee." },
+  { id: "l10-blackdoves", level: 10, q: "Who plays a spy posing as a politician's wife in Black Doves?", options: ["Emily Blunt", "Carey Mulligan", "Rosamund Pike", "Keira Knightley"], answer: 3, colleague: "She was in Pirates of the Caribbean and Pride & Prejudice." },
+  { id: "l11-zeroday", level: 11, q: "Robert De Niro plays a former U.S. president in which 2025 limited series?", options: ["Zero Day", "The Diplomat", "The Night Agent", "Designated Survivor"], answer: 0, colleague: "It's about a cyberattack. The title is a hacker term for a brand-new exploit." },
+  { id: "l11-graham", level: 11, q: "Which actor co-created Adolescence and plays Jamie's father?", options: ["Tom Hardy", "Stephen Graham", "Jason Statham", "Paddy Considine"], answer: 1, colleague: "He also starred in Boiling Point, another one-take drama." },
+  { id: "l12-vecna", level: 12, q: "Which Stranger Things villain was once known as Henry Creel?", options: ["The Mind Flayer", "The Demogorgon", "Vecna", "Dr. Brenner"], answer: 2, colleague: "He's named after a Dungeons & Dragons wizard. Starts with V." },
+  { id: "l12-residence", level: 12, q: "In The Residence, where does the murder take place?", options: ["Buckingham Palace", "The Kremlin", "The Pentagon", "The White House"], answer: 3, colleague: "\"The Residence\" is what staff call the private part of a famous American home." },
+  { id: "l13-mingle", level: 13, q: "Which Squid Game season 2 game is played on a spinning carousel?", options: ["Mingle", "Dalgona", "Jegichagi", "Gonggi"], answer: 0, colleague: "Dalgona was the candy game in season 1. This one is named after what you do at a party." },
+  { id: "l13-blanchett", level: 13, q: "Which Oscar winner appears as a recruiter in Squid Game's final scene?", options: ["Nicole Kidman", "Cate Blanchett", "Meryl Streep", "Kate Winslet"], answer: 1, colleague: "I'm fairly sure she's Australian... but so is Nicole Kidman. I'd lean toward the star of Tár." },
+  { id: "l14-rumi", level: 14, q: "Who voices Rumi, the leader of HUNTR/X?", options: ["Awkwafina", "Ali Wong", "Arden Cho", "Sandra Oh"], answer: 2, colleague: "I remember her from Teen Wolf. Her first name starts with A, but it's not Awkwafina." },
+  { id: "l14-gaga", level: 14, q: "Whose song \"Bloody Mary\" soundtracked the viral Wednesday dance trend?", options: ["Billie Eilish", "Olivia Rodrigo", "Dua Lipa", "Lady Gaga"], answer: 3, colleague: "The same star guest-stars in season 2. Her fans are called Little Monsters." },
+  { id: "l15-frankenstein", level: 15, q: "In Guillermo del Toro's 2025 Frankenstein, Jacob Elordi plays the Creature. Who plays Victor Frankenstein?", options: ["Oscar Isaac", "Andrew Garfield", "Christoph Waltz", "Benedict Cumberbatch"], answer: 0, colleague: "I think it's the Moon Knight actor... not 100% sure, maybe 70%." },
+  { id: "l15-serrano", level: 15, q: "On the Tyson vs. Paul card, Katie Taylor faced which rival in a rematch?", options: ["Claressa Shields", "Amanda Serrano", "Laila Ali", "Chantelle Cameron"], answer: 1, colleague: "Their first fight was at Madison Square Garden. She's from Puerto Rico, I'm pretty sure." },
+];
+
+/* ============================== UTILITIES =============================== */
+const $ = (s, r = document) => r.querySelector(s);
+const money = n => "$" + n.toLocaleString("en-US");
+const shuffle = a => { const b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 3 | 8)).toString(16); }));
+const isoDuration = ms => { const s = Math.max(0, ms) / 1000; if (s < 60) return `PT${s.toFixed(1)}S`; const m = Math.floor(s / 60); return `PT${m}M${Math.round(s - m * 60)}S`; };
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const reduced = () => window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+const storage = {
+  get(k, f) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch { return f; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+/* =============================== SETTINGS =============================== */
+let settings = Object.assign({ name: XAPI_DEFAULTS.actorName, email: XAPI_DEFAULTS.actorEmail, endpoint: XAPI_DEFAULTS.endpoint,
+  key: XAPI_DEFAULTS.key, secret: XAPI_DEFAULTS.secret, sound: false, suspense: true }, storage.get(STORAGE.settings, {}));
+
+function parseLaunch() {
+  const p = new URLSearchParams(location.search), out = {};
+  ["endpoint", "auth", "registration"].forEach(k => { if (p.get(k)) out[k] = p.get(k); });
+  if (p.get("activity_id")) out.activityId = p.get("activity_id");
+  if (p.get("actor")) {
+    try {
+      const a = JSON.parse(p.get("actor")), first = v => Array.isArray(v) ? v[0] : v, actor = { objectType: "Agent" };
+      ["name", "mbox", "mbox_sha1sum", "openid", "account"].forEach(k => { if (a[k]) actor[k] = first(a[k]); });
+      out.actor = actor;
+    } catch {}
+  }
+  if (!out.actor && (p.get("username") || p.get("user_id"))) {        // Docebo Iframe + OAuth client
+    const u = (p.get("username") || "").trim(), id = (p.get("user_id") || "").trim();
+    let origin = ""; try { origin = new URL(document.referrer).origin; } catch {}
+    out.actor = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(u)
+      ? { objectType: "Agent", name: u, mbox: "mailto:" + u.toLowerCase() }
+      : { objectType: "Agent", name: u || `User ${id}`, account: { homePage: origin || "https://learn.netflix.net", name: id || u } };
+  }
+  if (p.get("course_id")) out.courseId = p.get("course_id");
+  if (p.get("course_code")) out.courseCode = p.get("course_code");
+  return out;
+}
+const launch = parseLaunch();
+const launchedByLms = !!(launch.endpoint && launch.auth);
+const lmsActor = !!launch.actor;
+
+/* ============================== xAPI CLIENT ============================= */
+const xapi = {
+  queue: storage.get(STORAGE.queue, []),
+  config() {
+    let endpoint = launch.endpoint || settings.endpoint || "";
+    if (endpoint && !endpoint.endsWith("/")) endpoint += "/";
+    const auth = launch.auth || (settings.key && settings.secret ? "Basic " + btoa(`${settings.key}:${settings.secret}`) : "");
+    const actor = launch.actor || { objectType: "Agent", name: settings.name || "Player", mbox: `mailto:${settings.email || "player@example.com"}` };
+    return { endpoint, auth, actor, activityId: launch.activityId || XAPI_DEFAULTS.activityId, registration: launch.registration };
+  },
+  ready() { const c = this.config(); return !!(c.endpoint && c.auth); },
+  statement(verb, object, result, ext) {
+    const c = this.config();
+    const st = {
+      id: uuid(), actor: c.actor,
+      verb: { id: VERBS[verb], display: { "en-US": verb } },
+      object: Object.assign({ objectType: "Activity" }, object),
+      context: {
+        contextActivities: { grouping: [{ id: c.activityId, objectType: "Activity" }], category: [{ id: "https://w3id.org/xapi/seriousgames", objectType: "Activity" }] },
+        extensions: Object.assign({ [EXT + "app"]: XAPI_DEFAULTS.appName },
+          launch.courseId ? { [EXT + "courseId"]: launch.courseId } : {},
+          launch.courseCode ? { [EXT + "courseCode"]: launch.courseCode } : {}, ext || {}),
+      },
+      timestamp: new Date().toISOString(),
+    };
+    if (c.registration) st.context.registration = c.registration;
+    if (result) st.result = result;
+    return st;
+  },
+  enqueue(st) { this.queue.push({ statement: st, attempts: 0, nextAt: 0 }); storage.set(STORAGE.queue, this.queue); UI.queueCount(); return this.flush(); },
+  async post(st) {
+    const c = this.config();
+    const res = await fetch(c.endpoint + "statements", { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Experience-API-Version": "1.0.3", Authorization: c.auth }, body: JSON.stringify(st) });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+  },
+  async flush(force = false) {
+    if (this.flushing) { this.pending = true; return; }
+    this.flushing = true;
+    try {
+      if (!this.ready()) { UI.status(`No LRS configured: ${this.queue.length} statement(s) queued locally.`); return; }
+      let failed = false;
+      do {
+        this.pending = false; const now = Date.now();
+        for (const item of this.queue.slice()) {
+          if (!force && item.nextAt > now) continue;
+          try { await this.post(item.statement); this.queue = this.queue.filter(q => q !== item); }
+          catch (e) { failed = true; item.attempts++; item.nextAt = Date.now() + Math.min(300000, 2000 * 2 ** item.attempts); item.lastError = String(e.message || e); }
+        }
+      } while (this.pending);
+      storage.set(STORAGE.queue, this.queue); UI.queueCount();
+      if (failed) { UI.toast("xAPI delivery failed; will retry.", "bad"); UI.status(`Last error: ${this.queue[0]?.lastError}. ${this.queue.length} queued.`); this.retryLater(); }
+      else if (!this.queue.length) UI.status("All statements delivered.");
+    } finally { this.flushing = false; }
+  },
+  retryLater() { clearTimeout(this.t); const n = Math.min(...this.queue.map(q => q.nextAt)); if (isFinite(n)) this.t = setTimeout(() => this.flush(), Math.max(1000, n - Date.now())); },
+  /* Reads earlier players' answers to one question. Needs an LRS key with read permission. */
+  async audience(qid) {
+    if (!this.ready()) return null;
+    const c = this.config();
+    const url = `${c.endpoint}statements?verb=${encodeURIComponent(VERBS.answered)}&activity=${encodeURIComponent(c.activityId + "/question/" + qid)}&limit=500`;
+    const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 3500);
+    try {
+      const res = await fetch(url, { headers: { "X-Experience-API-Version": "1.0.3", Authorization: c.auth }, signal: ctrl.signal });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const tally = { a: 0, b: 0, c: 0, d: 0 }; let n = 0;
+      (data.statements || []).forEach(s => { const r = s.result && s.result.response; if (r in tally) { tally[r]++; n++; } });
+      return n ? { tally, n } : null;
+    } catch { return null; } finally { clearTimeout(timer); }
+  },
+  questionObject(q) {
+    const c = this.config();
+    return { id: `${c.activityId}/question/${q.id}`, definition: {
+      name: { "en-US": `Level ${q.level}: ${q.q}` }, description: { "en-US": q.q },
+      type: "http://adlnet.gov/expapi/activities/cmi.interaction", interactionType: "choice",
+      correctResponsesPattern: ["abcd"[q.answer]],
+      choices: q.options.map((o, i) => ({ id: "abcd"[i], description: { "en-US": o } })) } };
+  },
+};
+
+/* ================================ AUDIO ================================= */
+const audio = {
+  ctx: null,
+  tone(f, d = 0.15, type = "sine", v = 0.12, delay = 0) {
+    if (!settings.sound) return;
+    try {
+      this.ctx = this.ctx || new (window.AudioContext || window.webkitAudioContext)();
+      const t = this.ctx.currentTime + delay, o = this.ctx.createOscillator(), g = this.ctx.createGain();
+      o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      o.connect(g); g.connect(this.ctx.destination); o.start(t); o.stop(t + d);
+    } catch {}
+  },
+  lock() { this.tone(330, 0.5, "triangle", 0.1); },
+  right() { [523, 659, 784].forEach((f, i) => this.tone(f, 0.18, "sine", 0.12, i * 0.1)); },
+  wrong() { this.tone(180, 0.6, "sawtooth", 0.1); },
+  safe() { [523, 659, 784, 1046].forEach((f, i) => this.tone(f, 0.25, "triangle", 0.12, i * 0.12)); },
+};
+
+/* ================================ STATE ================================= */
+let state = null;
+function newState() {
+  const picks = [];
+  for (let lvl = 1; lvl <= 15; lvl++) {
+    const pool = QUESTIONS.filter(q => q.level === lvl);
+    const q = pool[Math.floor(Math.random() * pool.length)];
+    picks.push({ id: q.id, order: shuffle([0, 1, 2, 3]) });    // display order of the 4 options
+  }
+  return { version: 1, picks, level: 0, selected: null, removed: [], lifelines: { fifty: false, phone: false, poll: false },
+    usedThisQ: [], assist: null, answers: [], startedAt: new Date().toISOString(), qStartedAt: Date.now(), over: null };
+}
+const save = () => storage.set(STORAGE.state, state);
+const qAt = i => { const p = state.picks[i]; return { ...QUESTIONS.find(q => q.id === p.id), order: p.order }; };
+const banked = () => state.level > 0 ? LADDER[state.level - 1] : 0;
+const guaranteed = () => { let g = 0; SAFE.forEach(s => { if (state.level > s) g = LADDER[s]; }); return g; };
+
+/* ================================== UI ================================== */
+const UI = {
+  toast(m, k = "") { const t = document.createElement("div"); t.className = "toast " + k; t.textContent = m; $("#toasts").appendChild(t); setTimeout(() => t.remove(), 2600); },
+  say(m) { $("#announcer").textContent = m; },
+  status(m) { $("#xapiStatus").textContent = m; },
+  queueCount() { $("#queueCount").textContent = xapi.queue.length; },
+
+  renderLadder() {
+    const el = $("#ladder"); el.innerHTML = "";
+    LADDER.forEach((amt, i) => {
+      const r = document.createElement("div");
+      r.className = "rung" + (SAFE.includes(i) ? " safe" : "") + (i < state.level ? " done" : "") + (i === state.level && !state.over ? " current" : "");
+      r.innerHTML = `<span class="n">${i + 1}</span><span class="amt">${money(amt)}</span>`;
+      if (i === state.level) r.setAttribute("aria-current", "step");
+      el.appendChild(r);
+    });
+    const h = document.createElement("h2"); h.textContent = "Prize ladder"; el.appendChild(h);
+    const cur = Math.min(state.level, 14);
+    $("#miniLadder").innerHTML = `Question <strong>${cur + 1}</strong> of 15 for <strong>${money(LADDER[cur])}</strong> &middot; Safe: <strong>${money(guaranteed())}</strong>`;
+    $("#banked").textContent = money(banked());
+    $("#guaranteed").textContent = money(guaranteed());
+  },
+
+  renderQuestion() {
+    const q = qAt(state.level);
+    $("#qMeta").innerHTML = `Question <strong>${state.level + 1}</strong> of 15 &middot; playing for <strong>${money(LADDER[state.level])}</strong>${SAFE.includes(state.level) ? " &middot; safe haven" : ""}`;
+    $("#question").textContent = q.q;
+    const wrap = $("#answers"); wrap.innerHTML = "";
+    q.order.forEach((optIdx, pos) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "ans"; b.dataset.opt = optIdx; b.dataset.pos = pos;
+      b.innerHTML = `<span class="letter">${LETTERS[pos]}:</span><span>${esc(q.options[optIdx])}</span>`;
+      b.setAttribute("aria-label", `${LETTERS[pos]}: ${q.options[optIdx]}`);
+      if (state.removed.includes(optIdx)) { b.classList.add("removed"); b.disabled = true; b.setAttribute("aria-hidden", "true"); }
+      if (state.selected === optIdx) { b.classList.add("selected"); b.setAttribute("aria-pressed", "true"); }
+      b.addEventListener("click", () => Game.select(optIdx));
+      wrap.appendChild(b);
+    });
+    $("#btnLock").disabled = state.selected == null;
+    $("#btnWalk").disabled = state.level === 0;
+    $("#btnWalk").textContent = state.level === 0 ? "Walk away" : `Walk away with ${money(banked())}`;
+    $("#ll5050").disabled = state.lifelines.fifty; $("#llPhone").disabled = state.lifelines.phone; $("#llPoll").disabled = state.lifelines.poll;
+    this.renderAssist();
+    this.renderLadder();
+  },
+
+  renderAssist() {
+    const a = state.assist, el = $("#assist");
+    if (!a) { el.hidden = true; el.innerHTML = ""; return; }
+    el.hidden = false;
+    if (a.type === "phone") el.innerHTML = `<h3>&#128222; Your colleague says</h3><p>&ldquo;${esc(a.text)}&rdquo;</p>`;
+    if (a.type === "poll") {
+      const q = qAt(state.level);
+      el.innerHTML = `<h3>&#128202; Ask the audience</h3><div class="poll">${q.order.map((optIdx, pos) => {
+        const pct = a.pct[optIdx] || 0;
+        return `<div class="bar"><span class="pct">${pct}%</span><span class="fill" style="height:${pct * 0.75}%"></span><span class="lbl">${LETTERS[pos]}</span></div>`;
+      }).join("")}</div><p class="poll-note">${esc(a.note)}</p>`;
+    }
+  },
+
+  modal(html, focusSel) {
+    $("#modalCard").innerHTML = html; $("#modal").hidden = false;
+    ($(focusSel || "button", $("#modalCard")) || $("#modalCard")).focus();
+  },
+  closeModal() { $("#modal").hidden = true; $("#modalCard").innerHTML = ""; },
+
+  confetti() {
+    if (reduced()) return;
+    const w = document.createElement("div"); w.className = "confetti"; w.setAttribute("aria-hidden", "true");
+    const colors = ["#e50914", "#ffffff", "#f5c518", "#46d369"];
+    for (let i = 0; i < 60; i++) { const s = document.createElement("span"); s.style.left = Math.random() * 100 + "vw"; s.style.background = colors[i % 4]; s.style.animationDelay = Math.random() * 0.5 + "s"; w.appendChild(s); }
+    document.body.appendChild(w); setTimeout(() => w.remove(), 2600);
+  },
+};
+
+/* ================================= GAME ================================= */
+const Game = {
+  busy: false,
+  boot() {
+    state = storage.get(STORAGE.state, null);
+    const valid = state && state.version === 1 && Array.isArray(state.picks) && state.picks.length === 15 && state.picks.every(p => QUESTIONS.some(q => q.id === p.id));
+    if (!valid) state = null;
+    if (state && state.over) { this.showResult(); return; }
+    if (state && (state.level > 0 || state.answers.length)) $("#resumeNote").textContent = `Welcome back! You're on question ${state.level + 1} with ${money(banked())} banked.`;
+    $("#btnStart").textContent = state ? "Continue" : "Let's play";
+    if (state) { UI.renderQuestion(); }
+    $("#btnStart").focus();
+  },
+  start() {
+    $("#intro").hidden = true;
+    if (!state) { state = newState(); save(); xapi.enqueue(xapi.statement("initialized", { id: xapi.config().activityId, definition: { name: { "en-US": "Who Wants to Binge a Million?" }, type: "http://adlnet.gov/expapi/activities/assessment" } })); }
+    state.qStartedAt = Date.now(); save();
+    UI.renderQuestion();
+    const first = $(".ans:not(:disabled)"); if (first) first.focus();
+  },
+  newGame() { state = null; storage.set(STORAGE.state, null); UI.closeModal(); this.start(); UI.toast("New game. Good luck!", "ok"); },
+
+  select(optIdx) {
+    if (this.busy || state.over || state.removed.includes(optIdx)) return;
+    state.selected = optIdx; save();
+    document.querySelectorAll(".ans").forEach(b => { const on = +b.dataset.opt === optIdx; b.classList.toggle("selected", on); b.setAttribute("aria-pressed", on ? "true" : "false"); });
+    $("#btnLock").disabled = false;
+  },
+
+  /* ---- lifelines ---- */
+  fifty() {
+    if (state.lifelines.fifty || this.busy) return;
+    const q = qAt(state.level);
+    const wrong = shuffle([0, 1, 2, 3].filter(i => i !== q.answer && !state.removed.includes(i))).slice(0, 2);
+    state.removed = [...state.removed, ...wrong]; state.lifelines.fifty = true; state.usedThisQ.push("fiftyFifty");
+    if (wrong.includes(state.selected)) state.selected = null;
+    save(); UI.renderQuestion(); UI.say("Two wrong answers removed.");
+  },
+  phone() {
+    if (state.lifelines.phone || this.busy) return;
+    const q = qAt(state.level);
+    state.lifelines.phone = true; state.usedThisQ.push("phoneColleague");
+    state.assist = { type: "phone", text: q.colleague }; save(); UI.renderQuestion(); UI.say("Your colleague says: " + q.colleague);
+  },
+  async poll() {
+    if (state.lifelines.poll || this.busy) return;
+    this.busy = true; $("#llPoll").disabled = true;
+    const q = qAt(state.level), live = [0, 1, 2, 3].filter(i => !state.removed.includes(i));
+    let pct = {}, note;
+    const real = await xapi.audience(q.id);
+    const realN = real ? live.reduce((s, i) => s + real.tally["abcd"[i]], 0) : 0;
+    if (real && realN >= 5) {
+      live.forEach(i => pct[i] = Math.round(100 * real.tally["abcd"[i]] / realN));
+      note = `Based on ${realN} earlier players' answers to this question.`;
+    } else {
+      // Studio audience estimate: confident on easy questions, split on hard ones.
+      const confidence = Math.max(0.3, 0.85 - (q.level - 1) * 0.04);
+      const weights = {}; live.forEach(i => weights[i] = i === q.answer ? confidence * 100 : Math.random() * 40 * (1 - confidence) + 5);
+      const total = live.reduce((s, i) => s + weights[i], 0);
+      live.forEach(i => pct[i] = Math.round(100 * weights[i] / total));
+      note = "Studio audience estimate (not enough player data for this question yet).";
+    }
+    const diff = 100 - live.reduce((s, i) => s + pct[i], 0); pct[live[0]] += diff;       // make it total 100
+    state.lifelines.poll = true; state.usedThisQ.push("askAudience");
+    state.assist = { type: "poll", pct, note, real: !!(real && realN >= 5) };
+    this.busy = false; save(); UI.renderQuestion();
+  },
+
+  /* ---- answer flow ---- */
+  confirmLock() {
+    if (state.selected == null || this.busy) return;
+    const q = qAt(state.level), pos = q.order.indexOf(state.selected);
+    UI.modal(`<h2 id="modalTitle">Is that your final answer?</h2>
+      <p class="lede">${LETTERS[pos]}: <strong style="color:#fff">${esc(q.options[state.selected])}</strong></p>
+      <p class="lede">Get it right and you'll have <strong style="color:#fff">${money(LADDER[state.level])}</strong>. Get it wrong and you leave with <strong style="color:#fff">${money(guaranteed())}</strong>.</p>
+      <div class="card-foot"><button class="btn" id="mYes">Final answer</button><button class="btn-ghost" id="mNo">Let me think</button></div>`, "#mYes");
+    $("#mYes").addEventListener("click", () => { UI.closeModal(); this.lock(); });
+    $("#mNo").addEventListener("click", () => { UI.closeModal(); $(".ans.selected")?.focus(); });
+  },
+  async lock() {
+    this.busy = true;
+    const q = qAt(state.level), chosen = state.selected, correct = chosen === q.answer;
+    const level = state.level, ms = Date.now() - (state.qStartedAt || Date.now());
+    document.querySelectorAll(".ans, .lifeline, #btnLock, #btnWalk").forEach(b => b.disabled = true);
+    audio.lock();
+    if (settings.suspense && !reduced()) await wait(1400);
+    const right = $(`.ans[data-opt="${q.answer}"]`), pick = $(`.ans[data-opt="${chosen}"]`);
+    pick.classList.remove("selected");
+    right.classList.add("correct", "flash");
+    if (!correct) pick.classList.add("wrong");
+
+    const rec = { level: level + 1, questionId: q.id, prize: LADDER[level], response: "abcd"[chosen], responseText: q.options[chosen],
+      correct, lifelines: state.usedThisQ.slice(), ms, at: new Date().toISOString() };
+    state.answers.push(rec);
+    xapi.enqueue(xapi.statement("answered", xapi.questionObject(q),
+      { response: "abcd"[chosen], success: correct, duration: isoDuration(ms) },
+      { [EXT + "level"]: level + 1, [EXT + "prize"]: LADDER[level], [EXT + "lifelinesUsed"]: rec.lifelines,
+        [EXT + "fiftyFifty"]: rec.lifelines.includes("fiftyFifty"), [EXT + "phoneColleague"]: rec.lifelines.includes("phoneColleague"),
+        [EXT + "askAudience"]: rec.lifelines.includes("askAudience") }));
+
+    if (correct) {
+      audio.right(); UI.say(`Correct! You have ${money(LADDER[level])}.`);
+      state.level = level + 1; state.selected = null; state.removed = []; state.usedThisQ = []; state.assist = null; state.qStartedAt = Date.now();
+      if (SAFE.includes(level)) {
+        audio.safe(); UI.toast(`Safe haven! ${money(LADDER[level])} is guaranteed.`, "ok");
+        xapi.enqueue(xapi.statement("progressed", { id: xapi.config().activityId },
+          { score: { raw: LADDER[level], min: 0, max: 1000000 }, extensions: { "https://w3id.org/xapi/cmi5/result/extensions/progress": Math.round((level + 1) / 15 * 100) } },
+          { [EXT + "level"]: level + 1, [EXT + "safeHaven"]: LADDER[level] }));
+      } else UI.toast(`Correct! ${money(LADDER[level])}`, "ok");
+      save();
+      await wait(reduced() ? 400 : 1300);
+      this.busy = false;
+      if (state.level === 15) return this.end("won");
+      UI.renderQuestion(); $(".ans")?.focus();
+    } else {
+      audio.wrong(); UI.say(`Sorry, the correct answer was ${q.options[q.answer]}.`);
+      save();
+      await wait(reduced() ? 600 : 1800);
+      this.busy = false;
+      this.end("lost", q);
+    }
+  },
+  walkAway() {
+    if (state.level === 0 || this.busy || state.over) return;
+    UI.modal(`<h2 id="modalTitle">Walk away?</h2>
+      <p class="lede">You'll leave with <strong style="color:#fff">${money(banked())}</strong> and the game ends. Answer correctly and you'd have ${money(LADDER[state.level])}; get it wrong and you'd drop to ${money(guaranteed())}.</p>
+      <div class="card-foot"><button class="btn" id="mYes">Take the money</button><button class="btn-ghost" id="mNo">Keep playing</button></div>`, "#mNo");
+    $("#mYes").addEventListener("click", () => { UI.closeModal(); this.end("walked"); });
+    $("#mNo").addEventListener("click", () => UI.closeModal());
+  },
+  end(how, missedQ) {
+    const winnings = how === "won" ? 1000000 : how === "walked" ? banked() : guaranteed();
+    const highest = how === "lost" ? state.level : state.level;       // questions answered correctly
+    const durationMs = Date.now() - new Date(state.startedAt).getTime();
+    const lifelinesUsed = Object.values(state.lifelines).filter(Boolean).length;
+    state.over = { how, winnings, highest, durationMs, lifelinesUsed, missed: missedQ ? { q: missedQ.q, answer: missedQ.options[missedQ.answer] } : null, at: new Date().toISOString() };
+    save();
+    const c = xapi.config();
+    const result = { score: { raw: winnings, min: 0, max: 1000000, scaled: +(winnings / 1000000).toFixed(4) }, completion: true, success: how !== "lost", duration: isoDuration(durationMs) };
+    const ext = { [EXT + "highestLevel"]: highest, [EXT + "outcome"]: how, [EXT + "winnings"]: winnings, [EXT + "lifelinesUsed"]: lifelinesUsed };
+    if (how === "lost") { result.completion = true; xapi.enqueue(xapi.statement("failed", { id: c.activityId }, result, ext)); }
+    else xapi.enqueue(xapi.statement("completed", { id: c.activityId }, result, ext));
+    UI.renderLadder();
+    this.showResult();
+    if (how === "won") UI.confetti();
+  },
+  showResult() {
+    $("#intro").hidden = true;
+    const o = state.over;
+    const title = o.how === "won" ? "You're a millionaire!" : o.how === "walked" ? "Smart move." : "So close!";
+    const sub = o.how === "won" ? "All fifteen questions. That's a full binge." : o.how === "walked" ? `You walked away after ${o.highest} correct answers.` : `You answered ${o.highest} correctly before the slip.`;
+    UI.modal(`<h2 id="modalTitle">${title}</h2>
+      <p class="lede">${sub}</p>
+      <p class="big">${money(o.winnings)}</p>
+      <dl class="stats">
+        <div><dt>Correct</dt><dd>${o.highest}/15</dd></div>
+        <div><dt>Lifelines used</dt><dd>${o.lifelinesUsed}/3</dd></div>
+        <div><dt>Time</dt><dd>${Math.max(1, Math.round(o.durationMs / 60000))} min</dd></div>
+      </dl>
+      ${o.missed ? `<p class="lede">The question: ${esc(o.missed.q)}<br>Correct answer: <strong style="color:#fff">${esc(o.missed.answer)}</strong></p>` : ""}
+      <div class="card-foot"><button class="btn" id="mAgain">Play again</button><button class="btn-ghost" id="mHow">How to play</button></div>`, "#mAgain");
+    $("#mAgain").addEventListener("click", () => this.newGame());
+    $("#mHow").addEventListener("click", () => { UI.closeModal(); $("#intro").hidden = false; $("#btnStart").textContent = "Play again"; $("#resumeNote").textContent = ""; state.over && (state = null); });
+  },
+};
+
+/* ================================ EVENTS ================================ */
+$("#btnStart").addEventListener("click", () => Game.start());
+$("#btnHelp").addEventListener("click", () => { if (Game.busy) return; $("#btnStart").textContent = state ? "Back to the game" : "Let's play"; $("#resumeNote").textContent = ""; $("#intro").hidden = false; $("#btnStart").focus(); });
+$("#btnLock").addEventListener("click", () => Game.confirmLock());
+$("#btnWalk").addEventListener("click", () => Game.walkAway());
+$("#ll5050").addEventListener("click", () => Game.fifty());
+$("#llPhone").addEventListener("click", () => Game.phone());
+$("#llPoll").addEventListener("click", () => Game.poll());
+
+document.addEventListener("keydown", e => {
+  const typing = e.target.matches("input, textarea");
+  if (e.key === "Escape") {
+    if (!$("#settings").hidden) return closeSettings();
+    if (!$("#modal").hidden && !state?.over) return UI.closeModal();
+    if (!$("#intro").hidden && state && !state.over) return Game.start();
+    return;
+  }
+  if (e.key === "Tab") {                                       // focus trap for whichever overlay is open
+    const box = !$("#modal").hidden ? $("#modalCard") : !$("#intro").hidden ? $("#intro") : !$("#settings").hidden ? $("#settings") : null;
+    if (!box) return;
+    const f = [...box.querySelectorAll("button:not(:disabled), input:not(:disabled)")].filter(x => x.offsetParent !== null);
+    if (!f.length) return; const i = f.indexOf(document.activeElement);
+    if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && (i === f.length - 1 || i === -1)) { e.preventDefault(); f[0].focus(); }
+    return;
+  }
+  if (typing || !$("#modal").hidden || !$("#intro").hidden || !$("#settings").hidden || !state || state.over) return;
+  const k = e.key.toUpperCase(), pos = LETTERS.indexOf(k);
+  if (pos >= 0) { const b = $(`.ans[data-pos="${pos}"]`); if (b && !b.disabled) { Game.select(+b.dataset.opt); b.focus(); } e.preventDefault(); }
+  else if (e.key === "Enter" && state.selected != null && !e.target.matches("button:not(.ans)")) { e.preventDefault(); Game.confirmLock(); }
+  else if (e.key === "1") Game.fifty(); else if (e.key === "2") Game.phone(); else if (e.key === "3") Game.poll();
+});
+
+/* =============================== SETTINGS =============================== */
+function openSettings() {
+  $("#sName").value = settings.name; $("#sEmail").value = settings.email; $("#sEndpoint").value = settings.endpoint;
+  $("#sKey").value = settings.key; $("#sSecret").value = settings.secret; $("#sSound").checked = settings.sound; $("#sSuspense").checked = settings.suspense;
+  ["sName", "sEmail"].forEach(id => $("#" + id).disabled = lmsActor);
+  ["sEndpoint", "sKey", "sSecret"].forEach(id => $("#" + id).disabled = launchedByLms);
+  if (lmsActor) { const a = xapi.config().actor; $("#sName").value = a.name || ""; $("#sEmail").value = a.mbox ? a.mbox.replace("mailto:", "") : (a.account ? `${a.account.name} @ ${a.account.homePage}` : ""); }
+  if (launchedByLms) $("#sEndpoint").value = xapi.config().endpoint;
+  $("#lmsNote").hidden = !(launchedByLms || lmsActor);
+  $("#lmsNote").textContent = launchedByLms ? "Launched from the LMS: LRS and player identity were supplied by Docebo." : "Player identity was supplied by Docebo. Enter LRS details below to enable tracking.";
+  UI.queueCount();
+  $("#settings").hidden = false; $("#scrim").hidden = false; $("#btnSettings").setAttribute("aria-expanded", "true"); $("#btnCloseSettings").focus();
+}
+function closeSettings() { $("#settings").hidden = true; $("#scrim").hidden = true; $("#btnSettings").setAttribute("aria-expanded", "false"); $("#btnSettings").focus(); }
+$("#btnSettings").addEventListener("click", openSettings);
+$("#btnCloseSettings").addEventListener("click", closeSettings);
+$("#scrim").addEventListener("click", closeSettings);
+$("#settingsForm").addEventListener("submit", e => {
+  e.preventDefault();
+  if (!lmsActor) { settings.name = $("#sName").value.trim() || "Player"; settings.email = $("#sEmail").value.trim() || "player@example.com"; }
+  if (!launchedByLms) { settings.endpoint = $("#sEndpoint").value.trim(); settings.key = $("#sKey").value.trim(); settings.secret = $("#sSecret").value; }
+  settings.sound = $("#sSound").checked; settings.suspense = $("#sSuspense").checked;
+  storage.set(STORAGE.settings, settings); UI.toast("Settings saved.", "ok");
+  if (xapi.queue.length) xapi.flush(true);
+});
+$("#btnTest").addEventListener("click", async () => {
+  if (!xapi.ready()) return UI.status("Enter the endpoint, key and secret (and save) first.");
+  UI.status("Sending test statement...");
+  await xapi.enqueue(xapi.statement("experienced", { id: xapi.config().activityId + "/self-test", definition: { name: { "en-US": "xAPI connection self-test" } } }));
+  if (!xapi.queue.length) UI.toast("Test statement delivered.", "ok");
+});
+$("#btnRetry").addEventListener("click", () => xapi.flush(true));
+$("#btnNew").addEventListener("click", () => { if (confirm("Start a new game? Your current progress will be lost.")) { closeSettings(); Game.newGame(); } });
+window.addEventListener("online", () => xapi.flush(true));
+
+/* ================================= BOOT ================================= */
+Game.boot();
+if (xapi.queue.length) xapi.flush(true);
+window.BingeMillion = { get state() { return state; }, xapi, Game, QUESTIONS, settings };
+})();
+</script>
+</body>
+</html>
